@@ -76,6 +76,11 @@ button{cursor:pointer}
 .peers i{width:26px;height:26px;margin-left:-6px;border-radius:50%;display:grid;place-items:center;border:2px solid var(--surface);color:#fff;font-style:normal;font-weight:700;font-size:12px}
 .peers:empty{display:none}
 .card.pf{box-shadow:0 0 0 3px var(--peer),var(--shadow)}
+.cursors{position:fixed;inset:0;z-index:7;pointer-events:none;overflow:hidden}
+.cur{position:absolute;left:0;top:0;transition:transform 90ms linear;will-change:transform}
+.cur svg{display:block;width:18px;height:18px;filter:drop-shadow(0 1px 1px rgba(0,0,0,.3))}
+.cur span{position:absolute;left:14px;top:16px;padding:1px 8px;border-radius:999px;color:#fff;font-size:11px;font-weight:700;line-height:18px;white-space:nowrap}
+@media (prefers-reduced-motion:reduce){.cur{transition:none}}
 .ptag{position:absolute;top:-12px;left:12px;max-width:160px;overflow:hidden;text-overflow:ellipsis;padding:1px 8px;border-radius:999px;background:var(--peer);color:#fff;font-size:11px;font-weight:700;line-height:18px;white-space:nowrap;pointer-events:none}
 .tools{display:flex;align-items:center;gap:6px}
 .fab{display:none}
@@ -226,6 +231,8 @@ textarea.in{min-height:96px;resize:vertical;font-family:ui-monospace,Menlo,Conso
   <p>Active JavaScript pour utiliser l'application.</p>
 </div></noscript>
 
+<div class="cursors" id="cursors" aria-hidden="true"></div>
+
 <div class="menu" id="menu" hidden></div>
 
 <div class="hint" id="hint" hidden>
@@ -361,13 +368,16 @@ const COLORS=['#e5484d','#f76b15','#d4a106','#30a46c','#12a594','#0090ff','#6e56
 const myKey=uid();
 let me=(()=>{try{return JSON.parse(localStorage.getItem(KEY+'-me'));}catch(_){return null;}})();
 let others=[];
+const cursors=new Map(); // clé de la personne -> {el, x, y} en coordonnées de l'arbre
+let lastSnap=null;       // dernier état envoyé/reçu en direct, pour n'envoyer que les différences
+let liveDragT=0;
 function load(){
   try{const r=localStorage.getItem(STORE); if(r) return normalize(JSON.parse(r));}catch(e){}
   return null;
 }
 let S=load()||fresh();
 function persist(){try{localStorage.setItem(STORE,JSON.stringify(S));}catch(e){toast('Sauvegarde impossible (stockage plein ?). Exporte en .json.');}}
-function save(){persist(); if(room)schedulePush();}
+function save(){persist(); if(room){sendOps(); schedulePush();}}
 
 let hist=[], fut=[];
 function snapshot(){hist.push(JSON.stringify(S)); if(hist.length>100)hist.shift(); fut=[];}
@@ -575,7 +585,7 @@ function draw(){
   for(const [id,el] of els){const c=cur[id]; if(c)el.style.transform='translate('+c.x+'px,'+c.y+'px)';}
   const L=linkPaths(id=>cur[id]);
   $('#ln').setAttribute('d',dOf(L.ln)); $('#cp').setAttribute('d',dOf(L.cp));
-  placeMenu();
+  placeMenu(); placeCursors();
 }
 function bbox(){
   let x0=1e9,y0=1e9,x1=-1e9,y1=-1e9;
@@ -629,6 +639,7 @@ stage.addEventListener('pointermove',e=>{
     const p=person(drag.id); if(!p)return;
     p.dx=(p.dx||0)+dx/view.k; p.dy=(p.dy||0)+dy/view.k;
     tgt[p.id].x+=dx/view.k; tgt[p.id].y+=dy/view.k; cur[p.id]={x:tgt[p.id].x,y:tgt[p.id].y};
+    if(room&&!liveDragT)liveDragT=setTimeout(()=>{liveDragT=0;sendOps();},60);
   }
   kick();
 });
@@ -1032,7 +1043,7 @@ function applyRemote(d,v){
   const dirty=JSON.stringify(S)!==room.base;
   let next=remote;
   if(dirty){try{next=normalize(merge(JSON.parse(room.base),S,remote));}catch(_){next=remote;}}
-  room.base=JSON.stringify(remote); room.v=v; S=next;
+  room.base=JSON.stringify(remote); room.v=v; S=next; lastSnap=snap(S);
   if(sel&&!person(sel))closeMenu();
   persist(); sync();
 }
@@ -1059,6 +1070,8 @@ async function refresh(){
 function connect(){
   const ch=SB.channel('arbre:'+room.id,{config:{broadcast:{self:false},presence:{key:myKey}}});
   ch.on('broadcast',{event:'saved'},({payload})=>{if(payload&&payload.v>room.v)refresh();})
+    .on('broadcast',{event:'ops'},({payload})=>onOps(payload))
+    .on('broadcast',{event:'cur'},({payload})=>onCursor(payload))
     .on('presence',{event:'sync'},()=>renderPeers(ch.presenceState()))
     .subscribe(st=>{
       if(st==='SUBSCRIBED'){room.joined=true; trackMe(); refresh(); schedulePush();}
@@ -1087,10 +1100,12 @@ function renderPeers(st){
     const used=new Set(all.map(p=>p.color)), c=COLORS.find(c=>!used.has(c));
     if(c){me.color=c; try{localStorage.setItem(KEY+'-me',JSON.stringify(me));}catch(_){} trackMe(); return;}
   }
-  others=all.filter(p=>p.k!==myKey).map(p=>({name:String(p.name||'Invité').slice(0,24),color:COLORS.includes(p.color)?p.color:'#7d88a6',focus:typeof p.focus==='string'?p.focus:null}));
+  others=all.filter(p=>p.k!==myKey).map(p=>({k:p.k,name:String(p.name||'Invité').slice(0,24),color:COLORS.includes(p.color)?p.color:'#7d88a6',focus:typeof p.focus==='string'?p.focus:null}));
   $('#peers').innerHTML=[{name:me.name+' (toi)',color:me.color},...others].map(p=>'<i style="background:'+p.color+'" title="'+esc(p.name)+'">'+esc(p.name.trim().charAt(0).toUpperCase()||'?')+'</i>').join('');
   liveEl.dataset.n=others.length?(others.length+1)+' en ligne':'Partagé'; setLive(liveEl.dataset.n);
   paintFocus();
+  const here=new Set(others.map(p=>p.k));
+  for(const [k,c] of cursors)if(!here.has(k)){c.el.remove();cursors.delete(k);}
 }
 function paintFocus(){
   for(const el of els.values()){el.classList.remove('pf'); el.style.removeProperty('--peer'); const t=el.querySelector('.ptag'); if(t)t.remove();}
@@ -1101,6 +1116,70 @@ function paintFocus(){
     const t=document.createElement('span'); t.className='ptag'; t.textContent=ps.map(p=>p.name).join(', '); el.appendChild(t);
   }
 }
+// --- modifications en direct : on envoie seulement les fiches/couples changés, sans attendre la base ---
+function snap(st){
+  return {p:new Map(st.persons.map(x=>[x.id,JSON.stringify(x)])),u:new Map(st.unions.map(x=>[x.id,JSON.stringify(x)]))};
+}
+function diff(a,b){
+  const d={p:[],u:[],dp:[],du:[]};
+  for(const [k,out,del] of [['p','p','dp'],['u','u','du']]){
+    for(const [id,s] of b[k])if(a[k].get(id)!==s)d[out].push(JSON.parse(s));
+    for(const id of a[k].keys())if(!b[k].has(id))d[del].push(id);
+  }
+  return d;
+}
+function applyOps(st,d){
+  const up=(arr,items,dels)=>{
+    const m=new Map(arr.map(x=>[x.id,x]));
+    (items||[]).forEach(x=>{if(x&&typeof x.id==='string')m.set(x.id,x);});
+    (dels||[]).forEach(id=>m.delete(id));
+    return [...m.values()];
+  };
+  return {persons:up(st.persons,d.p,d.dp),unions:up(st.unions,d.u,d.du)};
+}
+function sendOps(){
+  if(!room||!room.joined||!lastSnap)return;
+  const s=snap(S), d=diff(lastSnap,s); lastSnap=s;
+  if(d.p.length+d.u.length+d.dp.length+d.du.length)room.ch.send({type:'broadcast',event:'ops',payload:d});
+}
+function onOps(d){
+  if(!room||!d)return;
+  try{
+    S=normalize(applyOps(S,d));
+    room.base=JSON.stringify(normalize(applyOps(JSON.parse(room.base),d)));
+  }catch(_){refresh();return;}
+  lastSnap=snap(S);
+  if(sel&&!person(sel))closeMenu();
+  persist(); sync();
+}
+// --- curseurs des autres ---
+let curT=0, curLast=0, curPending=null;
+function sendCursor(pos){
+  if(!room||!room.joined||!others.length)return;
+  curPending=pos;
+  const now=Date.now(), wait=Math.max(0,50-(now-curLast));
+  if(curT)return;
+  curT=setTimeout(()=>{curT=0; curLast=Date.now(); room.ch.send({type:'broadcast',event:'cur',payload:{k:myKey,...(curPending||{x:null})}});},wait);
+}
+stage.addEventListener('pointermove',e=>{if(e.pointerType==='mouse'||ptrs.has(e.pointerId))sendCursor({x:(e.clientX-view.x)/view.k,y:(e.clientY-view.y)/view.k});});
+stage.addEventListener('pointerleave',()=>sendCursor(null));
+function onCursor(c){
+  if(!c||typeof c.k!=='string')return;
+  const p=others.find(o=>o.k===c.k); if(!p)return;
+  let o=cursors.get(c.k);
+  if(typeof c.x!=='number'||typeof c.y!=='number'){if(o){o.el.remove();cursors.delete(c.k);}return;}
+  if(!o){
+    const el=document.createElement('div'); el.className='cur';
+    el.innerHTML='<svg viewBox="0 0 18 18"><path d="M2 1.5 15.5 8 9 9.6 6.2 15.8Z" stroke="#fff" stroke-width="1.4" stroke-linejoin="round"/></svg><span></span>';
+    $('#cursors').appendChild(el); o={el}; cursors.set(c.k,o);
+  }
+  o.el.querySelector('path').setAttribute('fill',p.color);
+  const tag=o.el.querySelector('span'); tag.textContent=p.name; tag.style.background=p.color;
+  o.x=c.x; o.y=c.y; placeCursors();
+}
+function placeCursors(){
+  for(const o of cursors.values())o.el.style.transform='translate('+(view.x+o.x*view.k)+'px,'+(view.y+o.y*view.k)+'px)';
+}
 async function joinRoom(id){
   if(!SB){toast('Partage indisponible (connexion).');return;}
   await askMe();
@@ -1110,7 +1189,7 @@ async function joinRoom(id){
   if(!data||!data[0]){setLive(''); toast('Ce lien de partage n\'existe pas ou plus.'); return;}
   let remote; try{remote=normalize(data[0].d);}catch(_){toast('Arbre partagé illisible.');return;}
   room={id,v:data[0].v,base:JSON.stringify(remote),ch:null};
-  S=remote; hist=[]; fut=[]; closeMenu(); persist(); sync(); fit();
+  S=remote; lastSnap=snap(S); hist=[]; fut=[]; closeMenu(); persist(); sync(); fit();
   connect();
 }
 async function createRoom(){
@@ -1121,7 +1200,7 @@ async function createRoom(){
   btn.disabled=false; btn.textContent='Créer le lien de partage';
   if(error||!id){toast('Impossible de créer le lien. Réessaie.');return;}
   STORE=KEY+':'+id;
-  room={id,v:1,base:JSON.stringify(S),ch:null};
+  room={id,v:1,base:JSON.stringify(S),ch:null}; lastSnap=snap(S);
   history.replaceState(null,'','?arbre='+id);
   persist(); connect(); fillShare();
 }
