@@ -123,6 +123,8 @@ button{cursor:pointer}
 /* aide + toast */
 .hint{position:fixed;left:50%;bottom:calc(18px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);z-index:8;width:min(440px,calc(100% - 32px));box-sizing:border-box;display:flex;align-items:center;gap:12px;padding:12px 14px;background:var(--surface);border:1px solid var(--soft);border-radius:14px;box-shadow:var(--shadow);line-height:1.4}
 .hint p{margin:0;flex:1;min-width:0}
+.hint{flex-wrap:wrap}
+.hint p{flex-basis:220px}
 .hint button{flex:none;min-height:36px;padding:0 12px;border-radius:10px;border:1px solid var(--soft);background:var(--field);font-weight:600;font-size:13px}
 .toast{position:fixed;left:50%;bottom:calc(84px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);z-index:60;max-width:calc(100% - 32px);padding:10px 14px;border-radius:10px;background:var(--fg);color:var(--bg);font-weight:600;font-size:13px;box-shadow:var(--shadow)}
 
@@ -191,6 +193,7 @@ textarea.in{min-height:96px;resize:vertical;font-family:ui-monospace,Menlo,Conso
 
 <div class="hint" id="hint" hidden>
   <p>Clique sur <b>Moi</b> pour ajouter père, mère, frères, sœurs, conjoint ou enfants. Les fiches se placent toutes seules.</p>
+  <button type="button" id="b-myname">Mettre mon nom</button>
   <button type="button" id="b-demo">Voir un exemple</button>
 </div>
 <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
@@ -726,6 +729,7 @@ function demo(){
   toast('Exemple chargé. Annuler pour revenir à ton arbre.');
 }
 $('#b-demo').onclick=demo;
+$('#b-myname').onclick=()=>{closeMenu();openEdit(S.persons[0]);};
 
 /* ---------- fenêtre d'ajout / modification ---------- */
 const dlgEl=$('#dlg'), form=$('#form');
@@ -742,7 +746,7 @@ function openDialog(cfg){
   $('#d-note').textContent=cfg.note||''; $('#d-note').hidden=!cfg.note;
   $('#d-ok').textContent=cfg.ok;
   setPhoto(cfg.p?cfg.p.photo:'');
-  dlgEl.hidden=false; setTimeout(()=>$('#f-name').focus(),30);
+  dlgEl.hidden=false; setTimeout(()=>{$('#f-name').focus();$('#f-name').select();},30);
 }
 function openAdd(rel,base){
   const guess=base.sex==='M'?'F':base.sex==='F'?'M':'F';
