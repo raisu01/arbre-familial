@@ -151,6 +151,11 @@ textarea.in{min-height:96px;resize:vertical;font-family:ui-monospace,Menlo,Conso
 .pv{width:44px;height:44px;border-radius:50%;background:var(--soft) center/cover no-repeat}
 .ghost{min-height:36px;padding:0 12px;border-radius:10px;border:1px solid var(--soft);background:var(--field);font-weight:600;font-size:13px}
 .ghost:hover{border-color:var(--accent)}
+.plist{display:grid;gap:6px;max-height:55vh;overflow:auto}
+.plist button{text-align:left;min-height:42px;padding:6px 12px;border-radius:10px;border:1.5px solid var(--soft);background:var(--field);font-weight:600;font-size:13.5px}
+.plist button:hover:not(:disabled){border-color:var(--accent)}
+.plist button:disabled{opacity:.55;cursor:default;border-style:dashed}
+.plist small{font-weight:400;color:var(--muted)}
 .pri{min-height:40px;padding:0 18px;border-radius:10px;border:0;background:var(--accent);color:var(--accent-fg);font-weight:700}
 .acts{display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap}
 .note{margin:0;color:var(--muted);font-size:12.5px;line-height:1.45}
@@ -220,6 +225,15 @@ textarea.in{min-height:96px;resize:vertical;font-family:ui-monospace,Menlo,Conso
     <p class="note" id="d-note"></p>
     <div class="acts"><button class="ghost" id="d-cancel" type="button">Annuler</button><button class="pri" id="d-ok" type="submit">Ajouter</button></div>
   </form>
+</div>
+
+<div class="ov" id="par" hidden>
+  <div class="panel">
+    <h2>Choisir les parents</h2>
+    <p class="sub" id="par-sub"></p>
+    <div class="plist" id="par-list"></div>
+    <div class="acts"><button class="ghost" id="par-cancel" type="button">Annuler</button></div>
+  </div>
 </div>
 
 <div class="ov" id="data" hidden>
@@ -593,7 +607,7 @@ function buildMenu(){
     }
     h+='</div></div>';
   }
-  h+='<div class="mf"><button data-act="edit">Modifier</button><button class="danger'+(delAsk?' ask':'')+'" data-act="del">'+(delAsk?'Confirmer ?':'Supprimer')+'</button></div>';
+  h+='<div class="mf"><button data-act="edit">Modifier</button><button data-act="par">Parents</button><button class="danger'+(delAsk?' ask':'')+'" data-act="del">'+(delAsk?'Confirmer ?':'Supprimer')+'</button></div>';
   menu.innerHTML=h;
 }
 function openMenu(id){
@@ -631,6 +645,7 @@ menu.addEventListener('click',e=>{
   const act=b.dataset.act;
   if(act==='close')closeMenu();
   else if(act==='edit'){const id=p.id; closeMenu(); openEdit(person(id));}
+  else if(act==='par'){const id=p.id; closeMenu(); openParents(id);}
   else if(act==='del'){
     if(!delAsk){delAsk=true;buildMenu();clearTimeout(delTimer);delTimer=setTimeout(()=>{delAsk=false;if(sel)buildMenu();},3000);}
     else{const id=p.id;clearTimeout(delTimer);closeMenu();removePerson(id);}
@@ -849,8 +864,61 @@ $('#j-pdf').onclick=()=>{
 
 addEventListener('keydown',e=>{
   if(e.key!=='Escape')return;
-  if(!dlgEl.hidden)closeDlg(); else if(!dataEl.hidden)dataEl.hidden=true; else if(sel)closeMenu();
+  if(!dlgEl.hidden)closeDlg(); else if(!parEl.hidden)parEl.hidden=true; else if(!dataEl.hidden)dataEl.hidden=true; else if(sel)closeMenu();
 });
+
+/* ---------- changer de parents ---------- */
+const parEl=$('#par');
+let parFor=null, parOpts=[];
+const nameOf=id=>{const p=person(id);return p?(p.name||'Sans nom'):'?';};
+// Personnes interdites comme parent : la personne, ses descendants et leurs conjoints (sinon boucle de générations)
+function lineage(id){
+  const D=new Set([id]), q=[id];
+  while(q.length){
+    const x=q.shift();
+    for(const u of ownUnions(x))[u.a,u.b,...u.kids].forEach(y=>{if(y&&!D.has(y)){D.add(y);q.push(y);}});
+  }
+  return D;
+}
+function openParents(id){
+  const D=lineage(id), curU=parentUnion(id), inSingle=new Set();
+  parOpts=[{label:'Aucun parent',u:null,cur:!curU}];
+  for(const u of S.unions){
+    const ps=[u.a,u.b].filter(Boolean);
+    if(ps.some(p=>D.has(p)))continue;
+    if(ps.length===1)inSingle.add(ps[0]);
+    parOpts.push({label:ps.map(nameOf).join(' et ')+(ps.length===1?' (seul·e)':''),u,cur:u===curU});
+  }
+  for(const p of S.persons){
+    if(D.has(p.id)||inSingle.has(p.id))continue;
+    parOpts.push({label:(p.name||'Sans nom')+' (seul·e)',pid:p.id,cur:false});
+  }
+  parOpts.sort((a,b)=>(b.cur-a.cur)||(!a.u&&!a.pid?-1:!b.u&&!b.pid?1:a.label.localeCompare(b.label,'fr')));
+  parFor=id;
+  $('#par-sub').textContent='de '+nameOf(id);
+  $('#par-list').innerHTML=parOpts.map((o,i)=>'<button type="button" data-i="'+i+'"'+(o.cur?' disabled':'')+'>'+esc(o.label)+(o.cur?' <small>· actuel</small>':'')+'</button>').join('');
+  parEl.hidden=false;
+}
+function setParents(id,o){
+  snapshot();
+  const old=parentUnion(id); if(old)old.kids=old.kids.filter(k=>k!==id);
+  let u=o.u;
+  if(!u&&o.pid){
+    const p=person(o.pid);
+    u=p.sex==='F'?{id:uid(),a:null,b:p.id,kids:[]}:{id:uid(),a:p.id,b:null,kids:[]};
+    S.unions.push(u);
+  }
+  if(u)u.kids.push(id);
+  S.unions=S.unions.filter(x=>(x.a&&x.b)||((x.a||x.b)&&x.kids.length));
+  save(); sync(); fit();
+}
+$('#par-list').addEventListener('click',e=>{
+  const b=e.target.closest('button'); if(!b||b.disabled)return;
+  const o=parOpts[+b.dataset.i], id=parFor; parEl.hidden=true;
+  if(o&&person(id))setParents(id,o);
+});
+$('#par-cancel').onclick=()=>{parEl.hidden=true;};
+parEl.addEventListener('pointerdown',e=>{if(e.target===parEl)parEl.hidden=true;});
 
 /* ---------- thème ---------- */
 const themeBtn=$('#b-theme'), themeMeta=document.querySelector('meta[name=theme-color]');
