@@ -253,7 +253,9 @@ textarea.in{min-height:96px;resize:vertical;font-family:ui-monospace,Menlo,Conso
   <div class="panel">
     <h2>Choisir les parents</h2>
     <p class="sub" id="par-sub"></p>
+    <input class="in" id="par-q" type="search" placeholder="Rechercher un nom…" aria-label="Rechercher un parent" autocomplete="off">
     <div class="plist" id="par-list"></div>
+    <p class="note" id="par-none" hidden>Aucun résultat.</p>
     <div class="acts"><button class="ghost" id="par-cancel" type="button">Annuler</button></div>
   </div>
 </div>
@@ -915,12 +917,23 @@ function openParents(id){
     if(D.has(p.id)||inSingle.has(p.id))continue;
     parOpts.push({label:(p.name||'Sans nom')+' (seul·e)',pid:p.id,cur:false});
   }
-  parOpts.sort((a,b)=>(b.cur-a.cur)||(!a.u&&!a.pid?-1:!b.u&&!b.pid?1:a.label.localeCompare(b.label,'fr')));
+  // ordre : couples, puis « Aucun parent », puis personnes seules ; l'actuel en tête de son groupe
+  const rank=o=>o.u&&o.u.a&&o.u.b?0:(!o.u&&!o.pid)?1:2;
+  parOpts.sort((a,b)=>(rank(a)-rank(b))||(b.cur-a.cur)||a.label.localeCompare(b.label,'fr'));
   parFor=id;
   $('#par-sub').textContent='de '+nameOf(id);
   $('#par-list').innerHTML=parOpts.map((o,i)=>'<button type="button" data-i="'+i+'"'+(o.cur?' disabled':'')+'>'+esc(o.label)+(o.cur?' <small>· actuel</small>':'')+'</button>').join('');
+  $('#par-q').value=''; $('#par-none').hidden=true;
   parEl.hidden=false;
+  if(matchMedia('(pointer:fine)').matches)setTimeout(()=>$('#par-q').focus(),30);
 }
+// recherche sans tenir compte des accents ni des majuscules
+const fold=s=>s.normalize('NFD').replace(/[̀-ͯ]/g,'').toLowerCase();
+$('#par-q').addEventListener('input',e=>{
+  const t=fold(e.target.value.trim()); let n=0;
+  $('#par-list').querySelectorAll('button').forEach(b=>{const ok=!t||fold(b.textContent).includes(t); b.hidden=!ok; n+=ok;});
+  $('#par-none').hidden=n>0;
+});
 function setParents(id,o){
   snapshot();
   const old=parentUnion(id); if(old)old.kids=old.kids.filter(k=>k!==id);
