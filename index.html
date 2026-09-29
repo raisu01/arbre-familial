@@ -521,7 +521,7 @@ const ptrs=new Map();
 function dates(p){
   if(p.birth&&p.death)return p.birth+' – '+p.death;
   if(p.birth)return 'né(e) '+p.birth;
-  if(p.death)return '† '+p.death;
+  if(p.death)return 'décédé(e) '+p.death;
   return '';
 }
 function fill(el,p){
