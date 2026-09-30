@@ -76,6 +76,10 @@ button{cursor:pointer}
 .peers i{width:26px;height:26px;margin-left:-6px;border-radius:50%;display:grid;place-items:center;border:2px solid var(--surface);color:#fff;font-style:normal;font-weight:700;font-size:12px}
 .peers:empty{display:none}
 .card.pf{box-shadow:0 0 0 3px var(--peer),var(--shadow)}
+.marquee{position:fixed;z-index:6;pointer-events:none;border:1.5px solid var(--accent);background:color-mix(in srgb,var(--accent) 12%,transparent);border-radius:4px}
+.card.pulse{animation:pulse .35s ease-out}
+@keyframes pulse{40%{scale:1.07}}
+@media (prefers-reduced-motion:reduce){.card.pulse{animation:none}}
 .cursors{position:fixed;inset:0;z-index:7;pointer-events:none;overflow:hidden}
 .cur{position:absolute;left:0;top:0;transition:transform 90ms linear;will-change:transform}
 .cur svg{display:block;width:18px;height:18px;filter:drop-shadow(0 1px 1px rgba(0,0,0,.3))}
@@ -235,6 +239,7 @@ textarea.in{min-height:96px;resize:vertical;font-family:ui-monospace,Menlo,Conso
 </div></noscript>
 
 <div class="cursors" id="cursors" aria-hidden="true"></div>
+<div class="marquee" id="marquee" hidden></div>
 
 <div class="menu" id="menu" hidden></div>
 
@@ -623,12 +628,13 @@ stage.addEventListener('pointerdown',e=>{
     const [a,b]=[...ptrs.values()]; pinch={d:Math.hypot(a.x-b.x,a.y-b.y)||1,k:view.k}; drag=null; return;
   }
   const c=e.target.closest('.card');
-  drag={type:c?'card':'pan',id:c&&c.dataset.id,sx:e.clientX,sy:e.clientY,lx:e.clientX,ly:e.clientY,moved:false,pre:c?JSON.stringify(S):null,
-    mod:e.ctrlKey||e.metaKey||e.shiftKey,long:false,lp:0};
+  const mod=e.ctrlKey||e.metaKey||e.shiftKey;
+  drag={type:c?'card':(mod&&e.pointerType==='mouse'?'rect':'pan'),id:c&&c.dataset.id,sx:e.clientX,sy:e.clientY,lx:e.clientX,ly:e.clientY,moved:false,pre:c?JSON.stringify(S):null,
+    mod,long:false,lp:0};
   // appui long au doigt = ajouter/retirer de la sélection multiple
   if(c&&e.pointerType!=='mouse'){
     const d=drag;
-    d.lp=setTimeout(()=>{if(drag===d&&!d.moved){d.long=true;toggleMulti(d.id);if(navigator.vibrate)navigator.vibrate(15);}},500);
+    d.lp=setTimeout(()=>{if(drag===d&&!d.moved){d.long=true;toggleMulti(d.id);haptic();pulse(d.id);}},500);
   }
 });
 stage.addEventListener('pointermove',e=>{
@@ -642,6 +648,7 @@ stage.addEventListener('pointermove',e=>{
   if(!drag.moved&&Math.hypot(e.clientX-drag.sx,e.clientY-drag.sy)<5)return;
   drag.moved=true; clearTimeout(drag.lp);
   const dx=e.clientX-drag.lx,dy=e.clientY-drag.ly; drag.lx=e.clientX; drag.ly=e.clientY;
+  if(drag.type==='rect'){drawMarquee(drag.sx,drag.sy,e.clientX,e.clientY);return;}
   if(drag.type==='pan'){view.x+=dx;view.y+=dy;viewT={...view};}
   else{
     // une fiche de la sélection multiple entraîne toutes les autres
@@ -660,6 +667,7 @@ function endPtr(e){
   ptrs.delete(e.pointerId); if(ptrs.size<2)pinch=null;
   if(drag){
     clearTimeout(drag.lp);
+    if(drag.type==='rect'){marquee.hidden=true; if(drag.moved&&e.type==='pointerup')selectInRect(drag.sx,drag.sy,e.clientX,e.clientY);}
     if(e.type==='pointerup'&&!drag.moved&&!drag.long){
       if(drag.type!=='card')closeMenu();
       else if(drag.mod)toggleMulti(drag.id);
@@ -697,7 +705,7 @@ function parentSlotFree(rel,p){
 function buildMenu(){
   if(multi.size>1){
     menu.innerHTML='<div class="mh"><b>'+multi.size+' personnes sélectionnées</b><button class="x" data-act="close" aria-label="Fermer">×</button></div>'
-      +'<p class="note">Glisse une des fiches pour les déplacer ensemble. Ctrl+clic ou appui long pour en ajouter ou en retirer.</p>'
+      +'<p class="note">Glisse une des fiches pour les déplacer ensemble. Ctrl+clic, Maj+rectangle ou appui long pour en ajouter ou en retirer.</p>'
       +'<div class="mf"><button data-act="par">Parents</button><button data-act="close">Désélectionner</button><button class="danger'+(delAsk?' ask':'')+'" data-act="del">'+(delAsk?'Confirmer ?':'Supprimer')+'</button></div>';
     return;
   }
@@ -712,7 +720,7 @@ function buildMenu(){
     h+='</div></div>';
   }
   h+='<div class="mf"><button data-act="edit">Modifier</button><button data-act="par">Parents</button><button class="danger'+(delAsk?' ask':'')+'" data-act="del">'+(delAsk?'Confirmer ?':'Supprimer')+'</button></div>';
-  h+='<p class="note mtip">Astuce : Ctrl+clic ou appui long pour sélectionner plusieurs fiches.</p>';
+  h+='<p class="note mtip">Astuce : Ctrl+clic, ou Maj + glisser dans le vide pour un rectangle, pour sélectionner plusieurs fiches.</p>';
   menu.innerHTML=h;
 }
 // sélection multiple : sel reste l'ancre du menu (dernière fiche touchée)
@@ -724,6 +732,33 @@ function toggleMulti(id){
   sel=multi.has(id)?id:[...multi][multi.size-1];
   delAsk=false; buildMenu(); menu.hidden=false; hint.hidden=true; markSel(); placeMenu();
 }
+// sélection par rectangle (Maj/Ctrl + glisser dans le vide) : ajoute les fiches touchées à la sélection
+const marquee=$('#marquee');
+function drawMarquee(x0,y0,x1,y1){
+  marquee.hidden=false;
+  Object.assign(marquee.style,{left:Math.min(x0,x1)+'px',top:Math.min(y0,y1)+'px',width:Math.abs(x1-x0)+'px',height:Math.abs(y1-y0)+'px'});
+}
+function selectInRect(x0,y0,x1,y1){
+  const w=v=>(v-view.x)/view.k, h=v=>(v-view.y)/view.k;
+  const L=w(Math.min(x0,x1)), R=w(Math.max(x0,x1)), T=h(Math.min(y0,y1)), B=h(Math.max(y0,y1));
+  const hit=S.persons.map(p=>p.id).filter(id=>{const c=cur[id]; return c&&c.x<R&&c.x+CW>L&&c.y<B&&c.y+CH>T;});
+  if(!hit.length)return;
+  const set=new Set(multi.size?multi:(sel?[sel]:[])); hit.forEach(id=>set.add(id));
+  if(set.size===1)return openMenu([...set][0]);
+  multi.clear(); set.forEach(id=>multi.add(id)); sel=hit[hit.length-1];
+  delAsk=false; buildMenu(); menu.hidden=false; hint.hidden=true; markSel(); placeMenu();
+}
+// Vibration : Android via navigator.vibrate ; iPhone (Safari n'a pas l'API) via l'astuce iOS 18+ du « switch » caché
+function haptic(){
+  if(navigator.vibrate){try{navigator.vibrate(15);}catch(_){} return;}
+  try{
+    const l=document.createElement('label'); l.ariaHidden='true'; l.style.display='none';
+    const i=document.createElement('input'); i.type='checkbox'; i.setAttribute('switch',''); l.appendChild(i);
+    document.head.appendChild(l); l.click(); l.remove();
+  }catch(_){}
+}
+// retour visuel pour tous les appareils (même sans vibration)
+function pulse(id){const el=els.get(id); if(!el)return; el.classList.remove('pulse'); void el.offsetWidth; el.classList.add('pulse'); setTimeout(()=>el.classList.remove('pulse'),400);}
 function openMenu(id){
   multi.clear(); sel=id; delAsk=false; buildMenu(); menu.hidden=false; hint.hidden=true; markSel();
   if(innerWidth<560){
