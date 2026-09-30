@@ -134,6 +134,9 @@ button{cursor:pointer}
 .mf button{flex:1;min-height:36px;border-radius:10px;border:1px solid var(--soft);background:var(--field);font-weight:600;font-size:13px}
 .mf button:hover{border-color:var(--accent)}
 .mf .danger{color:var(--danger)}
+.menu .note{font-size:12px}
+.mtip{margin-top:-2px}
+@media (pointer:coarse){.mtip{display:none}}
 .mf .danger.ask{background:var(--danger);border-color:var(--danger);color:var(--surface)}
 
 /* aide + toast */
@@ -514,6 +517,7 @@ const dOf=segs=>segs.map(s=>'M'+s.map(p=>p.map(v=>Math.round(v*10)/10).join(' ')
 const els=new Map(), cur={}, tgt={};
 let view={x:0,y:0,k:1}, viewT={x:0,y:0,k:1};
 let sel=null, raf=0, drag=null, pinch=null;
+const multi=new Set(); // sélection multiple (vide = sélection simple via sel)
 const ptrs=new Map();
 
 function dates(p){
@@ -619,7 +623,13 @@ stage.addEventListener('pointerdown',e=>{
     const [a,b]=[...ptrs.values()]; pinch={d:Math.hypot(a.x-b.x,a.y-b.y)||1,k:view.k}; drag=null; return;
   }
   const c=e.target.closest('.card');
-  drag={type:c?'card':'pan',id:c&&c.dataset.id,sx:e.clientX,sy:e.clientY,lx:e.clientX,ly:e.clientY,moved:false,pre:c?JSON.stringify(S):null};
+  drag={type:c?'card':'pan',id:c&&c.dataset.id,sx:e.clientX,sy:e.clientY,lx:e.clientX,ly:e.clientY,moved:false,pre:c?JSON.stringify(S):null,
+    mod:e.ctrlKey||e.metaKey||e.shiftKey,long:false,lp:0};
+  // appui long au doigt = ajouter/retirer de la sélection multiple
+  if(c&&e.pointerType!=='mouse'){
+    const d=drag;
+    d.lp=setTimeout(()=>{if(drag===d&&!d.moved){d.long=true;toggleMulti(d.id);if(navigator.vibrate)navigator.vibrate(15);}},500);
+  }
 });
 stage.addEventListener('pointermove',e=>{
   if(!ptrs.has(e.pointerId))return;
@@ -630,13 +640,17 @@ stage.addEventListener('pointermove',e=>{
   }
   if(!drag)return;
   if(!drag.moved&&Math.hypot(e.clientX-drag.sx,e.clientY-drag.sy)<5)return;
-  drag.moved=true;
+  drag.moved=true; clearTimeout(drag.lp);
   const dx=e.clientX-drag.lx,dy=e.clientY-drag.ly; drag.lx=e.clientX; drag.ly=e.clientY;
   if(drag.type==='pan'){view.x+=dx;view.y+=dy;viewT={...view};}
   else{
-    const p=person(drag.id); if(!p)return;
-    p.dx=(p.dx||0)+dx/view.k; p.dy=(p.dy||0)+dy/view.k;
-    tgt[p.id].x+=dx/view.k; tgt[p.id].y+=dy/view.k; cur[p.id]={x:tgt[p.id].x,y:tgt[p.id].y};
+    // une fiche de la sélection multiple entraîne toutes les autres
+    const ids=multi.has(drag.id)?[...multi]:[drag.id];
+    for(const id of ids){
+      const p=person(id); if(!p||!tgt[id])continue;
+      p.dx=(p.dx||0)+dx/view.k; p.dy=(p.dy||0)+dy/view.k;
+      tgt[id].x+=dx/view.k; tgt[id].y+=dy/view.k; cur[id]={x:tgt[id].x,y:tgt[id].y};
+    }
     if(room&&!liveDragT)liveDragT=setTimeout(()=>{liveDragT=0;sendOps();},60);
   }
   kick();
@@ -645,7 +659,12 @@ function endPtr(e){
   if(!ptrs.has(e.pointerId))return;
   ptrs.delete(e.pointerId); if(ptrs.size<2)pinch=null;
   if(drag){
-    if(e.type==='pointerup'&&!drag.moved){drag.type==='card'?toggleSelect(drag.id):closeMenu();}
+    clearTimeout(drag.lp);
+    if(e.type==='pointerup'&&!drag.moved&&!drag.long){
+      if(drag.type!=='card')closeMenu();
+      else if(drag.mod)toggleMulti(drag.id);
+      else toggleSelect(drag.id);
+    }
     if(drag.moved&&drag.type==='card'){hist.push(drag.pre);if(hist.length>100)hist.shift();fut=[];save();sync();}
   }
   if(ptrs.size===0)drag=null;
@@ -655,7 +674,7 @@ stage.addEventListener('pointercancel',endPtr);
 stage.addEventListener('wheel',e=>{e.preventDefault();zoomAt(e.clientX,e.clientY,Math.exp(-e.deltaY*0.0015));},{passive:false});
 world.addEventListener('keydown',e=>{
   const c=e.target.closest&&e.target.closest('.card');
-  if(c&&(e.key==='Enter'||e.key===' ')){e.preventDefault();toggleSelect(c.dataset.id);}
+  if(c&&(e.key==='Enter'||e.key===' ')){e.preventDefault();(e.ctrlKey||e.metaKey||e.shiftKey)?toggleMulti(c.dataset.id):toggleSelect(c.dataset.id);}
 });
 $('#z-in').onclick=()=>zoomAt(innerWidth/2,innerHeight/2,1.25);
 $('#z-out').onclick=()=>zoomAt(innerWidth/2,innerHeight/2,0.8);
@@ -676,6 +695,12 @@ function parentSlotFree(rel,p){
   return ![u.a,u.b].filter(Boolean).some(id=>(person(id)||{}).sex===sex);
 }
 function buildMenu(){
+  if(multi.size>1){
+    menu.innerHTML='<div class="mh"><b>'+multi.size+' personnes sélectionnées</b><button class="x" data-act="close" aria-label="Fermer">×</button></div>'
+      +'<p class="note">Glisse une des fiches pour les déplacer ensemble. Ctrl+clic ou appui long pour en ajouter ou en retirer.</p>'
+      +'<div class="mf"><button data-act="par">Parents</button><button data-act="close">Désélectionner</button><button class="danger'+(delAsk?' ask':'')+'" data-act="del">'+(delAsk?'Confirmer ?':'Supprimer')+'</button></div>';
+    return;
+  }
   const p=person(sel); if(!p)return closeMenu();
   let h='<div class="mh"><b>'+esc(p.name||'Sans nom')+'</b><button class="x" data-act="close" aria-label="Fermer">×</button></div>';
   for(const [label,items] of GROUPS){
@@ -687,10 +712,20 @@ function buildMenu(){
     h+='</div></div>';
   }
   h+='<div class="mf"><button data-act="edit">Modifier</button><button data-act="par">Parents</button><button class="danger'+(delAsk?' ask':'')+'" data-act="del">'+(delAsk?'Confirmer ?':'Supprimer')+'</button></div>';
+  h+='<p class="note mtip">Astuce : Ctrl+clic ou appui long pour sélectionner plusieurs fiches.</p>';
   menu.innerHTML=h;
 }
+// sélection multiple : sel reste l'ancre du menu (dernière fiche touchée)
+function toggleMulti(id){
+  if(!multi.size&&sel)multi.add(sel);
+  if(multi.has(id))multi.delete(id);else multi.add(id);
+  if(!multi.size)return closeMenu();
+  if(multi.size===1){const only=[...multi][0]; multi.clear(); return openMenu(only);}
+  sel=multi.has(id)?id:[...multi][multi.size-1];
+  delAsk=false; buildMenu(); menu.hidden=false; hint.hidden=true; markSel(); placeMenu();
+}
 function openMenu(id){
-  sel=id; delAsk=false; buildMenu(); menu.hidden=false; hint.hidden=true; markSel();
+  multi.clear(); sel=id; delAsk=false; buildMenu(); menu.hidden=false; hint.hidden=true; markSel();
   if(innerWidth<560){
     const c=cur[id]; if(c){
       const limit=innerHeight-menu.offsetHeight-CH*view.k-30, sy=view.y+c.y*view.k;
@@ -700,11 +735,11 @@ function openMenu(id){
   placeMenu();
 }
 function closeMenu(){
-  sel=null; delAsk=false; menu.hidden=true; markSel();
+  sel=null; multi.clear(); delAsk=false; menu.hidden=true; markSel();
   hint.hidden=!(S.persons.length<=1);
 }
-function toggleSelect(id){sel===id?closeMenu():openMenu(id);}
-function markSel(){for(const [id,el] of els)el.classList.toggle('sel',id===sel); trackMe();}
+function toggleSelect(id){sel===id&&!multi.size?closeMenu():openMenu(id);}
+function markSel(){for(const [id,el] of els)el.classList.toggle('sel',id===sel||multi.has(id)); trackMe();}
 function placeMenu(){
   if(!sel||menu.hidden)return;
   const c=cur[sel]; if(!c)return;
@@ -719,6 +754,16 @@ function placeMenu(){
 }
 menu.addEventListener('click',e=>{
   const b=e.target.closest('button'); if(!b||b.disabled)return;
+  if(multi.size>1){
+    const ids=[...multi], act=b.dataset.act;
+    if(act==='close')closeMenu();
+    else if(act==='par'){closeMenu(); openParents(ids);}
+    else if(act==='del'){
+      if(!delAsk){delAsk=true;buildMenu();clearTimeout(delTimer);delTimer=setTimeout(()=>{delAsk=false;if(multi.size>1)buildMenu();},3000);}
+      else{clearTimeout(delTimer);closeMenu();removePerson(ids);}
+    }
+    return;
+  }
   const p=person(sel); if(!p)return;
   if(b.dataset.rel){const id=p.id; closeMenu(); openAdd(b.dataset.rel,person(id));return;}
   const act=b.dataset.act;
@@ -783,10 +828,11 @@ function editPerson(id,d){
   p.sex=d.sex; p.birth=d.birth; p.death=d.death; p.photo=d.photo;
   save(); sync(); ensureVisible();
 }
-function removePerson(id){
+function removePerson(idOrIds){
+  const del=new Set([].concat(idOrIds));
   snapshot();
-  S.persons=S.persons.filter(p=>p.id!==id);
-  S.unions.forEach(u=>{if(u.a===id)u.a=null;if(u.b===id)u.b=null;u.kids=u.kids.filter(k=>k!==id);});
+  S.persons=S.persons.filter(p=>!del.has(p.id));
+  S.unions.forEach(u=>{if(del.has(u.a))u.a=null;if(del.has(u.b))u.b=null;u.kids=u.kids.filter(k=>!del.has(k));});
   S.unions=S.unions.filter(u=>(u.a&&u.b)||((u.a||u.b)&&u.kids.length));
   if(!S.persons.length)S=fresh();
   save(); sync(); fit();
@@ -959,8 +1005,11 @@ function lineage(id){
   }
   return D;
 }
-function openParents(id){
-  const D=lineage(id), curU=parentUnion(id), inSingle=new Set();
+function openParents(idOrIds){
+  const ids=[].concat(idOrIds), D=new Set(), inSingle=new Set();
+  ids.forEach(i=>lineage(i).forEach(x=>D.add(x)));
+  const us=new Set(ids.map(parentUnion)), curU=us.size===1?[...us][0]:'différents'; // parents actuels communs à tous
+  const id=ids[0];
   parOpts=[{label:'Aucun parent',u:null,cur:!curU}];
   for(const u of S.unions){
     const ps=[u.a,u.b].filter(Boolean);
@@ -975,8 +1024,8 @@ function openParents(id){
   // ordre : couples, puis « Aucun parent », puis personnes seules ; l'actuel en tête de son groupe
   const rank=o=>o.u&&o.u.a&&o.u.b?0:(!o.u&&!o.pid)?1:2;
   parOpts.sort((a,b)=>(rank(a)-rank(b))||(b.cur-a.cur)||a.label.localeCompare(b.label,'fr'));
-  parFor=id;
-  $('#par-sub').textContent='de '+nameOf(id);
+  parFor=ids;
+  $('#par-sub').textContent=ids.length>1?'de '+ids.length+' personnes : '+ids.map(nameOf).join(', '):'de '+nameOf(id);
   $('#par-list').innerHTML=parOpts.map((o,i)=>'<button type="button" data-i="'+i+'"'+(o.cur?' disabled':'')+'>'+esc(o.label)+(o.cur?' <small>· actuel</small>':'')+'</button>').join('');
   $('#par-q').value=''; $('#par-none').hidden=true;
   parEl.hidden=false;
@@ -989,23 +1038,23 @@ $('#par-q').addEventListener('input',e=>{
   $('#par-list').querySelectorAll('button').forEach(b=>{const ok=!t||fold(b.textContent).includes(t); b.hidden=!ok; n+=ok;});
   $('#par-none').hidden=n>0;
 });
-function setParents(id,o){
+function setParents(ids,o){
   snapshot();
-  const old=parentUnion(id); if(old)old.kids=old.kids.filter(k=>k!==id);
+  for(const id of ids){const old=parentUnion(id); if(old)old.kids=old.kids.filter(k=>k!==id);}
   let u=o.u;
   if(!u&&o.pid){
     const p=person(o.pid);
     u=p.sex==='F'?{id:uid(),a:null,b:p.id,kids:[]}:{id:uid(),a:p.id,b:null,kids:[]};
     S.unions.push(u);
   }
-  if(u)u.kids.push(id);
+  if(u)u.kids.push(...ids);
   S.unions=S.unions.filter(x=>(x.a&&x.b)||((x.a||x.b)&&x.kids.length));
   save(); sync(); fit();
 }
 $('#par-list').addEventListener('click',e=>{
   const b=e.target.closest('button'); if(!b||b.disabled)return;
-  const o=parOpts[+b.dataset.i], id=parFor; parEl.hidden=true;
-  if(o&&person(id))setParents(id,o);
+  const o=parOpts[+b.dataset.i], ids=(parFor||[]).filter(person); parEl.hidden=true;
+  if(o&&ids.length)setParents(ids,o);
 });
 $('#par-cancel').onclick=()=>{parEl.hidden=true;};
 parEl.addEventListener('pointerdown',e=>{if(e.target===parEl)parEl.hidden=true;});
