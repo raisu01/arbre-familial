@@ -139,6 +139,14 @@ button{cursor:pointer}
 .mf button:hover{border-color:var(--accent)}
 .mf .danger{color:var(--danger)}
 .menu .note{font-size:12px}
+.mbtn{min-height:38px;border-radius:10px;border:1px solid var(--soft);background:var(--field);font-weight:700;font-size:13px}
+.mbtn.pri-soft{border-color:var(--accent);color:var(--accent)}
+.mbtn:hover{border-color:var(--accent)}
+.mbloc{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:12px;color:var(--muted)}
+.mbloc span{flex:1;min-width:110px}
+.mbloc button{min-height:30px;padding:0 10px;border-radius:8px;border:1px dashed var(--accent);background:transparent;color:var(--accent);font-weight:600;font-size:12px}
+.bloc{position:absolute;left:0;top:0;border:1.5px dashed var(--accent);border-radius:20px;background:color-mix(in srgb,var(--accent) 5%,transparent);pointer-events:none}
+.bloc i{position:absolute;top:-10px;left:16px;padding:0 8px;border-radius:999px;background:var(--bg);color:var(--accent);font:700 11px/18px var(--font-body);font-style:normal}
 .mtip{margin-top:-2px}
 @media (pointer:coarse){.mtip{display:none}}
 .mf .danger.ask{background:var(--danger);border-color:var(--danger);color:var(--surface)}
@@ -345,7 +353,7 @@ const stage=$('#stage'), world=$('#world'), menu=$('#menu'), bar=$('#bar'), hint
 
 /* ---------- état ---------- */
 function fresh(){
-  return {persons:[{id:uid(),name:'Moi',sex:'',birth:'',death:'',photo:'',ph:false,dx:0,dy:0}],unions:[]};
+  return {persons:[{id:uid(),name:'Moi',sex:'',birth:'',death:'',photo:'',ph:false,dx:0,dy:0}],unions:[],groups:[]};
 }
 function normalize(o){
   if(!o||!Array.isArray(o.persons)||!o.persons.length) throw new Error('Format invalide');
@@ -362,7 +370,19 @@ function normalize(o){
   })).filter(u=>u.a||u.b);
   const seen=new Set();
   unions.forEach(u=>{u.kids=u.kids.filter(k=>{if(seen.has(k)||k===u.a||k===u.b)return false;seen.add(k);return true;});});
-  return {persons,unions};
+  // blocs : une personne dans un seul bloc ; l'ancre est placée par la mise en page, les autres membres gardent
+  // leur position relative (rel) à l'ancre
+  const inG=new Set();
+  const groups=(Array.isArray(o.groups)?o.groups:[]).filter(Boolean).map(g=>{
+    const members=(Array.isArray(g.members)?g.members:[]).filter(m=>ids.has(m)&&!inG.has(m));
+    members.forEach(m=>inG.add(m));
+    let anchor=members.includes(g.anchor)?g.anchor:members[0];
+    const rel={};
+    if(anchor===g.anchor&&g.rel&&typeof g.rel==='object')
+      members.forEach(m=>{const r=g.rel[m]; if(Array.isArray(r)&&r.length===2&&isFinite(r[0])&&isFinite(r[1]))rel[m]=[+r[0],+r[1]];});
+    return {id:String(g.id||uid()),anchor,members,rel};
+  }).filter(g=>g.members.length>1);
+  return {persons,unions,groups};
 }
 // arbre partagé : ?arbre=<uuid> dans l'adresse ; copie locale séparée de l'arbre perso
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -550,18 +570,27 @@ function sync(spawn){
   for(const [id,el] of els){
     if(!ids.has(id)){el.remove();els.delete(id);delete cur[id];delete tgt[id];}
   }
+  // position finale : mise en page auto + décalage manuel ; dans un bloc, ancre + position relative
+  const gOf=new Map(); (S.groups||[]).forEach(g=>g.members.forEach(m=>gOf.set(m,g)));
+  const place=p=>{
+    const g=gOf.get(p.id), A=g&&lay[g.anchor];
+    if(!g||g.anchor===p.id||!A)return {x:lay[p.id].x+(p.dx||0),y:lay[p.id].y+(p.dy||0)};
+    if(!g.rel[p.id])g.rel[p.id]=[lay[p.id].x-A.x,lay[p.id].y-A.y]; // nouveau membre : placé comme la mise en page auto, puis figé
+    const a=person(g.anchor);
+    return {x:A.x+(a.dx||0)+g.rel[p.id][0],y:A.y+(a.dy||0)+g.rel[p.id][1]};
+  };
   for(const p of S.persons){
-    const L=lay[p.id];
+    const L=place(p);
     let el=els.get(p.id);
     if(!el){
       el=document.createElement('button'); el.type='button'; el.className='card'; el.dataset.id=p.id;
       el.innerHTML='<span class="av"></span><span class="tx"><span class="nm"></span><span class="dt"></span></span>';
       world.appendChild(el); els.set(p.id,el);
-      const from=(spawn&&cur[spawn])||{x:L.x+(p.dx||0),y:L.y+(p.dy||0)};
+      const from=(spawn&&cur[spawn])||L;
       cur[p.id]={x:from.x,y:from.y};
       if(spawn){el.classList.add('new'); setTimeout(()=>el.classList.remove('new'),450);}
     }
-    tgt[p.id]={x:L.x+(p.dx||0),y:L.y+(p.dy||0)};
+    tgt[p.id]={x:L.x,y:L.y};
     fill(el,p);
   }
   if(reduce)for(const id in tgt)cur[id]={x:tgt[id].x,y:tgt[id].y};
@@ -592,7 +621,22 @@ function draw(){
   for(const [id,el] of els){const c=cur[id]; if(c)el.style.transform='translate('+c.x+'px,'+c.y+'px)';}
   const L=linkPaths(id=>cur[id]);
   $('#ln').setAttribute('d',dOf(L.ln)); $('#cp').setAttribute('d',dOf(L.cp));
-  placeMenu(); placeCursors();
+  drawBlocs(); placeMenu(); placeCursors();
+}
+// contour pointillé autour de chaque bloc (sous les fiches)
+const blocEls=new Map();
+function drawBlocs(){
+  const live=new Set();
+  for(const g of (S.groups||[])){
+    let x0=1e9,y0=1e9,x1=-1e9,y1=-1e9;
+    for(const m of g.members){const c=cur[m]; if(!c)continue; x0=Math.min(x0,c.x);y0=Math.min(y0,c.y);x1=Math.max(x1,c.x+CW);y1=Math.max(y1,c.y+CH);}
+    if(x0>1e8)continue;
+    live.add(g.id);
+    let el=blocEls.get(g.id);
+    if(!el){el=document.createElement('div'); el.className='bloc'; el.innerHTML='<i>Bloc</i>'; world.prepend(el); blocEls.set(g.id,el);}
+    const P=14; el.style.transform='translate('+(x0-P)+'px,'+(y0-P)+'px)'; el.style.width=(x1-x0+P*2)+'px'; el.style.height=(y1-y0+P*2)+'px';
+  }
+  for(const [id,el] of blocEls)if(!live.has(id)){el.remove();blocEls.delete(id);}
 }
 function bbox(){
   let x0=1e9,y0=1e9,x1=-1e9,y1=-1e9;
@@ -651,13 +695,11 @@ stage.addEventListener('pointermove',e=>{
   if(drag.type==='rect'){drawMarquee(drag.sx,drag.sy,e.clientX,e.clientY);return;}
   if(drag.type==='pan'){view.x+=dx;view.y+=dy;viewT={...view};}
   else{
-    // une fiche de la sélection multiple entraîne toutes les autres
-    const ids=multi.has(drag.id)?[...multi]:[drag.id];
-    for(const id of ids){
-      const p=person(id); if(!p||!tgt[id])continue;
-      p.dx=(p.dx||0)+dx/view.k; p.dy=(p.dy||0)+dy/view.k;
-      tgt[id].x+=dx/view.k; tgt[id].y+=dy/view.k; cur[id]={x:tgt[id].x,y:tgt[id].y};
-    }
+    // une fiche de la sélection multiple entraîne les autres ; une fiche d'un bloc entraîne tout le bloc (via son ancre)
+    const ids=multi.has(drag.id)?[...multi]:[drag.id], movers=new Set(), moved=new Set();
+    for(const id of ids){const g=groupOf(id); if(g){movers.add(g.anchor); g.members.forEach(m=>moved.add(m));} else {movers.add(id); moved.add(id);}}
+    for(const id of movers){const p=person(id); if(p){p.dx=(p.dx||0)+dx/view.k; p.dy=(p.dy||0)+dy/view.k;}}
+    for(const id of moved){if(!tgt[id])continue; tgt[id].x+=dx/view.k; tgt[id].y+=dy/view.k; cur[id]={x:tgt[id].x,y:tgt[id].y};}
     if(room&&!liveDragT)liveDragT=setTimeout(()=>{liveDragT=0;sendOps();},60);
   }
   kick();
@@ -706,6 +748,8 @@ function buildMenu(){
   if(multi.size>1){
     menu.innerHTML='<div class="mh"><b>'+multi.size+' personnes sélectionnées</b><button class="x" data-act="close" aria-label="Fermer">×</button></div>'
       +'<p class="note">Glisse une des fiches pour les déplacer ensemble. Ctrl+clic, Maj+rectangle ou appui long pour en ajouter ou en retirer.</p>'
+      +(()=>{const gs=new Set([...multi].map(groupOf)); const same=gs.size===1&&[...gs][0]&&[...gs][0].members.length===multi.size;
+        return same?'<button class="mbtn" data-act="unbloc">Défaire le bloc</button>':'<button class="mbtn pri-soft" data-act="bloc">Créer un bloc avec ces '+multi.size+' fiches</button>';})()
       +'<div class="mf"><button data-act="par">Parents</button><button data-act="close">Désélectionner</button><button class="danger'+(delAsk?' ask':'')+'" data-act="del">'+(delAsk?'Confirmer ?':'Supprimer')+'</button></div>';
     return;
   }
@@ -720,6 +764,8 @@ function buildMenu(){
     h+='</div></div>';
   }
   h+='<div class="mf"><button data-act="edit">Modifier</button><button data-act="par">Parents</button><button class="danger'+(delAsk?' ask':'')+'" data-act="del">'+(delAsk?'Confirmer ?':'Supprimer')+'</button></div>';
+  const g=groupOf(p.id);
+  if(g)h+='<div class="mbloc"><span>Dans un bloc de '+g.members.length+' fiches</span><button data-act="unbloc">Sortir du bloc</button><button data-act="selbloc">Tout le bloc</button></div>';
   h+='<p class="note mtip">Astuce : Ctrl+clic, ou Maj + glisser dans le vide pour un rectangle, pour sélectionner plusieurs fiches.</p>';
   menu.innerHTML=h;
 }
@@ -793,6 +839,8 @@ menu.addEventListener('click',e=>{
     const ids=[...multi], act=b.dataset.act;
     if(act==='close')closeMenu();
     else if(act==='par'){closeMenu(); openParents(ids);}
+    else if(act==='bloc'){closeMenu(); makeBloc(ids);}
+    else if(act==='unbloc'){closeMenu(); unBloc(ids);}
     else if(act==='del'){
       if(!delAsk){delAsk=true;buildMenu();clearTimeout(delTimer);delTimer=setTimeout(()=>{delAsk=false;if(multi.size>1)buildMenu();},3000);}
       else{clearTimeout(delTimer);closeMenu();removePerson(ids);}
@@ -805,6 +853,8 @@ menu.addEventListener('click',e=>{
   if(act==='close')closeMenu();
   else if(act==='edit'){const id=p.id; closeMenu(); openEdit(person(id));}
   else if(act==='par'){const id=p.id; closeMenu(); openParents(id);}
+  else if(act==='unbloc'){const id=p.id; closeMenu(); unBloc([id]);}
+  else if(act==='selbloc'){const g=groupOf(p.id); if(g){closeMenu(); g.members.forEach(m=>multi.add(m)); sel=p.id; delAsk=false; buildMenu(); menu.hidden=false; markSel(); placeMenu();}}
   else if(act==='del'){
     if(!delAsk){delAsk=true;buildMenu();clearTimeout(delTimer);delTimer=setTimeout(()=>{delAsk=false;if(sel)buildMenu();},3000);}
     else{const id=p.id;clearTimeout(delTimer);closeMenu();removePerson(id);}
@@ -824,7 +874,7 @@ function toast(msg){
 }
 function addRel(rel,base,d){
   snapshot();
-  let np;
+  let np; const n0=S.persons.length;
   if(rel==='father'||rel==='mother'){
     const sex=rel==='father'?'M':'F';
     let u=parentUnion(base.id);
@@ -854,6 +904,8 @@ function addRel(rel,base,d){
     if(us.length)us[us.length-1].kids.push(np.id);
     else S.unions.push({id:uid(),a:base.id,b:null,kids:[np.id]});
   }
+  // ajout depuis une fiche d'un bloc : les nouvelles fiches rejoignent ce bloc
+  const g=groupOf(base.id); if(g)S.persons.slice(n0).forEach(p=>g.members.push(p.id));
   save(); sync(base.id); ensureVisible();
 }
 function editPerson(id,d){
@@ -870,7 +922,44 @@ function removePerson(idOrIds){
   S.unions.forEach(u=>{if(del.has(u.a))u.a=null;if(del.has(u.b))u.b=null;u.kids=u.kids.filter(k=>!del.has(k));});
   S.unions=S.unions.filter(u=>(u.a&&u.b)||((u.a||u.b)&&u.kids.length));
   if(!S.persons.length)S=fresh();
+  else{const lay=computeLayout(); (S.groups||[]).forEach(g=>{g.members=g.members.filter(m=>!del.has(m)); if(del.has(g.anchor))rebase(g,lay);}); pruneGroups(lay);}
   save(); sync(); fit();
+}
+/* ---------- blocs ---------- */
+const groupOf=id=>(S.groups||[]).find(g=>g.members.includes(id));
+// fige une fiche à sa position actuelle hors bloc (décalage par rapport à la mise en page auto)
+function release(id,lay){const p=person(id); if(p&&tgt[id]&&lay[id]){p.dx=tgt[id].x-lay[id].x; p.dy=tgt[id].y-lay[id].y;}}
+// change d'ancre sans faire bouger les fiches du bloc
+function rebase(g,lay){
+  if(!g.members.length)return;
+  const a=g.members[0]; release(a,lay); g.anchor=a; g.rel={};
+  g.members.forEach(m=>{if(m!==a&&tgt[m]&&tgt[a])g.rel[m]=[tgt[m].x-tgt[a].x,tgt[m].y-tgt[a].y];});
+}
+function pruneGroups(lay){
+  S.groups=(S.groups||[]).filter(g=>{if(g.members.length>1)return true; g.members.forEach(m=>release(m,lay)); return false;});
+}
+function makeBloc(ids){
+  snapshot();
+  const lay=computeLayout();
+  // une fiche n'appartient qu'à un bloc : on la retire de son ancien bloc
+  (S.groups||[]).forEach(g=>{const had=g.anchor; g.members=g.members.filter(m=>!ids.includes(m)); if(!g.members.includes(had))rebase(g,lay);});
+  pruneGroups(lay);
+  const a=ids[0], g={id:uid(),anchor:a,members:[...ids],rel:{}};
+  release(a,lay); // l'ancre garde sa place actuelle
+  ids.forEach(m=>{if(m!==a)g.rel[m]=[tgt[m].x-tgt[a].x,tgt[m].y-tgt[a].y];});
+  S.groups.push(g);
+  save(); sync(); toast('Bloc créé : il se déplace et se range d\'un seul tenant.');
+}
+function unBloc(ids){
+  snapshot();
+  const lay=computeLayout();
+  for(const id of ids){
+    const g=groupOf(id); if(!g)continue;
+    release(id,lay); g.members=g.members.filter(m=>m!==id); delete g.rel[id];
+    if(g.anchor===id)rebase(g,lay);
+  }
+  pruneGroups(lay);
+  save(); sync();
 }
 function undo(){
   if(!hist.length)return; fut.push(JSON.stringify(S)); S=JSON.parse(hist.pop());
@@ -884,11 +973,12 @@ $('#b-undo').onclick=undo; $('#b-redo').onclick=redo;
 $('#b-fit').onclick=()=>fit();
 $('#b-tidy').onclick=()=>{
   if(!S.persons.some(p=>p.dx||p.dy)){toast('Les fiches sont déjà à leur place.');return;}
+  // les blocs gardent leur disposition interne : seule leur ancre revient en place
   snapshot(); S.persons.forEach(p=>{p.dx=0;p.dy=0;}); save(); sync(); fit();
 };
 function demo(){
   snapshot();
-  S={persons:[],unions:[]};
+  S={persons:[],unions:[],groups:[]};
   const P=(n,s,birth,death)=>newPerson(s,'',{name:n,birth:birth||'',death:death||''});
   const gf=P('Modou Ndiaye','M','1938','2009'), gm=P('Awa Fall','F','1942');
   const mgf=P('Ibrahima Sow','M','1940'), mgm=P('Fatou Ba','F','1945');
@@ -1113,12 +1203,12 @@ function setLive(txt,off){liveEl.hidden=!txt; liveEl.textContent=txt||''; liveEl
 // ponytail: fusion au niveau fiche/couple ; si deux personnes modifient la même fiche en même temps, la dernière gagne.
 function merge(base,local,remote){
   const m=k=>{
-    const B=new Map(base[k].map(x=>[x.id,x])), R=new Map(remote[k].map(x=>[x.id,x])), L=new Set();
-    for(const x of local[k]){L.add(x.id); const b=B.get(x.id); if(!b||JSON.stringify(b)!==JSON.stringify(x))R.set(x.id,x);}
+    const B=new Map((base[k]||[]).map(x=>[x.id,x])), R=new Map((remote[k]||[]).map(x=>[x.id,x])), L=new Set();
+    for(const x of (local[k]||[])){L.add(x.id); const b=B.get(x.id); if(!b||JSON.stringify(b)!==JSON.stringify(x))R.set(x.id,x);}
     for(const id of B.keys())if(!L.has(id))R.delete(id);
     return [...R.values()];
   };
-  return {persons:m('persons'),unions:m('unions')};
+  return Object.fromEntries(KS.map(k=>[k,m(k)]));
 }
 function applyRemote(d,v){
   let remote; try{remote=normalize(d);}catch(_){return;}
@@ -1199,30 +1289,32 @@ function paintFocus(){
   }
 }
 // --- modifications en direct : on envoie seulement les fiches/couples changés, sans attendre la base ---
+const KS=['persons','unions','groups'];
 function snap(st){
-  return {p:new Map(st.persons.map(x=>[x.id,JSON.stringify(x)])),u:new Map(st.unions.map(x=>[x.id,JSON.stringify(x)]))};
+  return Object.fromEntries(KS.map(k=>[k,new Map((st[k]||[]).map(x=>[x.id,JSON.stringify(x)]))]));
 }
 function diff(a,b){
-  const d={p:[],u:[],dp:[],du:[]};
-  for(const [k,out,del] of [['p','p','dp'],['u','u','du']]){
-    for(const [id,s] of b[k])if(a[k].get(id)!==s)d[out].push(JSON.parse(s));
-    for(const id of a[k].keys())if(!b[k].has(id))d[del].push(id);
+  const d={};
+  for(const k of KS){
+    const up=[],del=[];
+    for(const [id,s] of b[k])if(a[k].get(id)!==s)up.push(JSON.parse(s));
+    for(const id of a[k].keys())if(!b[k].has(id))del.push(id);
+    if(up.length||del.length)d[k]={up,del};
   }
   return d;
 }
 function applyOps(st,d){
-  const up=(arr,items,dels)=>{
-    const m=new Map(arr.map(x=>[x.id,x]));
-    (items||[]).forEach(x=>{if(x&&typeof x.id==='string')m.set(x.id,x);});
-    (dels||[]).forEach(id=>m.delete(id));
-    return [...m.values()];
-  };
-  return {persons:up(st.persons,d.p,d.dp),unions:up(st.unions,d.u,d.du)};
+  return Object.fromEntries(KS.map(k=>{
+    const m=new Map((st[k]||[]).map(x=>[x.id,x])), o=d[k]||{};
+    (Array.isArray(o.up)?o.up:[]).forEach(x=>{if(x&&typeof x.id==='string')m.set(x.id,x);});
+    (Array.isArray(o.del)?o.del:[]).forEach(id=>m.delete(id));
+    return [k,[...m.values()]];
+  }));
 }
 function sendOps(){
   if(!room||!room.joined||!lastSnap)return;
   const s=snap(S), d=diff(lastSnap,s); lastSnap=s;
-  if(d.p.length+d.u.length+d.dp.length+d.du.length)room.ch.send({type:'broadcast',event:'ops',payload:d});
+  if(Object.keys(d).length)room.ch.send({type:'broadcast',event:'ops',payload:d});
 }
 function onOps(d){
   if(!room||!d)return;
